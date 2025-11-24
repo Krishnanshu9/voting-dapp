@@ -1,8 +1,9 @@
+// App.test.js patch
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders learn react link', () => {
+test('renders login heading', () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  const heading = screen.getByText(/Welcome to decentralized voting application/i);
+  expect(heading).toBeInTheDocument();
 });
