@@ -1,103 +1,68 @@
-// patch: App.js (key parts)
-// See full file: App.js. :contentReference[oaicite:6]{index=6}
-
-import { useState, useEffect } from 'react';
-import { ethers } from 'ethers';
-import { contractAbi, contractAddress } from './Constant/constant';
-import Login from './Components/Login';
-import Finished from './Components/Finished';
-import Connected from './Components/Connected';
-import './App.css';
+// src/App.js
+import React, { useState, useEffect } from "react";
+import { ethers } from "ethers";
+import { contractAbi, contractAddress } from "./Constant/constant";
+import Login from "./Components/Login";
+import Finished from "./Components/Finished";
+import Connected from "./Components/Connected";
+import "./App.css";
 
 function App() {
-  const [provider, setProvider] = useState(null); // stored provider
+  const [provider, setProvider] = useState(null); // ethers provider (Web3Provider)
   const [account, setAccount] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [votingStatus, setVotingStatus] = useState(true);
-  const [remainingTime, setRemainingTime] = useState('');
+  const [remainingTime, setRemainingTime] = useState("");
   const [candidates, setCandidates] = useState([]);
-  const [number, setNumber] = useState('');
-  const [canVote, setCanVote] = useState(true); // camelCase
+  const [number, setNumber] = useState("");
+  const [canVote, setCanVote] = useState(true);
 
+  // Initialize a read-only provider and read contract data (no popup)
   useEffect(() => {
-    // Only call read-only functions if window.ethereum exists and we have a provider
     if (window.ethereum) {
       const readProvider = new ethers.providers.Web3Provider(window.ethereum);
       setProvider(readProvider);
+
       // initial reads using provider (no signer) to avoid popup
       read_getCandidates(readProvider);
       read_getRemainingTime(readProvider);
       read_getCurrentStatus(readProvider);
 
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      // Attach listeners for accounts and chain changes
+      window.ethereum.on("accountsChanged", onAccountsChanged);
+      window.ethereum.on("chainChanged", onChainChanged);
+
       return () => {
-        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        try {
+          window.ethereum.removeListener("accountsChanged", onAccountsChanged);
+          window.ethereum.removeListener("chainChanged", onChainChanged);
+        } catch (e) {
+          // ignore if provider isn't available during cleanup
+        }
       };
     }
-  }, []);
+  }, []); // run once
 
-  // send transaction (requires signer)
-  async function vote() {
-    if (!provider) return console.error('Provider not ready');
-    const signer = provider.getSigner();
-    const contractInstance = new ethers.Contract(contractAddress, contractAbi, signer);
-    const candidateIndex = parseInt(number, 10);
-    if (Number.isNaN(candidateIndex)) return alert('Please enter a valid candidate index');
-    try {
-      const tx = await contractInstance.vote(candidateIndex);
-      await tx.wait();
-      // refresh local state after vote
-      await read_getCandidates(provider);
-      await updateCanVote(signer); // refresh voter's status
-    } catch (err) {
-      console.error('Vote failed:', err);
-    }
-  }
-
-  // checks if connected address has voted — uses signer
-  async function updateCanVote(signer) {
-    const contractInstance = new ethers.Contract(contractAddress, contractAbi, signer);
-    const addr = await signer.getAddress();
-    const voteStatus = await contractInstance.voters(addr); // returns bool (true = already voted)
-    setCanVote(!voteStatus);
-  }
-
-  // read-only: get candidates (use provider, no signer, no popup)
-  async function read_getCandidates(p) {
-    if (!p) return;
-    const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
-    const candidatesList = await contractInstance.getAllVotesOfCandiates();
-    const formattedCandidates = candidatesList.map((candidate, index) => ({
-      index,
-      name: candidate.name,
-      voteCount: candidate.voteCount.toNumber()
-    }));
-    setCandidates(formattedCandidates);
-  }
-
-  async function read_getCurrentStatus(p) {
-    if (!p) return;
-    const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
-    const status = await contractInstance.getVotingStatus();
-    setVotingStatus(status);
-  }
-
-  async function read_getRemainingTime(p) {
-    if (!p) return;
-    const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
-    const time = await contractInstance.getRemainingTime();
-    setRemainingTime(time.toNumber());
-  }
-
-  function handleAccountsChanged(accounts) {
+  // --- Account / Chain handlers ---
+  async function onAccountsChanged(accounts) {
+    console.log("onAccountsChanged:", accounts);
     if (accounts && accounts.length > 0) {
-      setAccount(accounts[0]);
-      setIsConnected(true);
-      // when accounts change, create signer from stored provider and refresh canVote + candidates
-      if (provider) {
-        const signer = provider.getSigner();
-        updateCanVote(signer);
-        read_getCandidates(provider);
+      // recreate provider & signer
+      const p = new ethers.providers.Web3Provider(window.ethereum);
+      setProvider(p);
+      const signer = p.getSigner();
+      try {
+        const address = await signer.getAddress();
+        setAccount(address);
+        setIsConnected(true);
+
+        // refresh reads
+        await read_getCandidates(p);
+        await read_getRemainingTime(p);
+        await read_getCurrentStatus(p);
+        await updateCanVote(signer);
+      } catch (err) {
+        console.error("onAccountsChanged error:", err);
       }
     } else {
       setIsConnected(false);
@@ -106,27 +71,143 @@ function App() {
     }
   }
 
-  async function connectToMetamask() {
-    if (window.ethereum) {
+  async function onChainChanged(chainId) {
+    console.log("onChainChanged:", chainId);
+    // recreate provider and refresh state
+    const p = new ethers.providers.Web3Provider(window.ethereum);
+    setProvider(p);
+    try {
+      await read_getCandidates(p);
+      await read_getRemainingTime(p);
+      await read_getCurrentStatus(p);
+      // refresh voter's status if connected
       try {
-        const p = new ethers.providers.Web3Provider(window.ethereum);
-        setProvider(p);
-        await p.send("eth_requestAccounts", []);
         const signer = p.getSigner();
-        const address = await signer.getAddress();
-        setAccount(address);
-        setIsConnected(true);
-
-        // fetch signer-based pieces
-        updateCanVote(signer);
-        read_getCandidates(p);
-        read_getRemainingTime(p);
-        read_getCurrentStatus(p);
-      } catch (err) {
-        console.error(err);
+        await updateCanVote(signer);
+      } catch (e) {
+        // no signer available yet
       }
-    } else {
+    } catch (err) {
+      console.error("onChainChanged read error:", err);
+    }
+  }
+
+  // --- Voting / contract interactions ---
+
+  // send transaction (requires signer)
+  async function vote() {
+    const p = provider ?? new ethers.providers.Web3Provider(window.ethereum);
+    const signer = p.getSigner();
+    const contractInstance = new ethers.Contract(contractAddress, contractAbi, signer);
+    const candidateIndex = parseInt(number, 10);
+    if (Number.isNaN(candidateIndex)) return alert("Please enter a valid candidate index");
+    try {
+      const tx = await contractInstance.vote(candidateIndex);
+      await tx.wait();
+      // refresh local state after vote
+      await read_getCandidates(p);
+      await updateCanVote(signer);
+    } catch (err) {
+      console.error("Vote failed:", err);
+      // show short feedback
+      if (err?.error?.message) {
+        alert(err.error.message);
+      } else if (err?.reason) {
+        alert(err.reason);
+      } else {
+        // generic
+        alert("Vote failed; see console for details.");
+      }
+    }
+  }
+
+  // checks if connected address has voted — uses signer
+  async function updateCanVote(signer) {
+    try {
+      const contractInstance = new ethers.Contract(contractAddress, contractAbi, signer);
+      const addr = await signer.getAddress();
+      const voteStatus = await contractInstance.voters(addr); // true = already voted
+      setCanVote(!voteStatus);
+    } catch (err) {
+      console.error("updateCanVote error:", err);
+      // if signer not available, default allow
+      setCanVote(true);
+    }
+  }
+
+  // read-only: get candidates (use provider, no signer, no popup)
+  async function read_getCandidates(p) {
+    try {
+      console.log("read_getCandidates: provider ready?", !!p);
+      if (!p) return;
+      const network = await p.getNetwork();
+      console.log("Provider network:", network);
+      console.log("Using contract address:", contractAddress);
+
+      const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
+      const candidatesList = await contractInstance.getAllVotesOfCandiates();
+      console.log("Raw candidatesList from contract:", candidatesList);
+
+      const formattedCandidates = candidatesList.map((candidate, index) => {
+        console.log("candidate raw item:", candidate);
+        const name = candidate.name ?? candidate[0];
+        const voteCountBn = candidate.voteCount ?? candidate[1];
+        const voteCount = voteCountBn && voteCountBn.toNumber ? voteCountBn.toNumber() : Number(voteCountBn);
+        return { index, name, voteCount };
+      });
+
+      console.log("formattedCandidates:", formattedCandidates);
+      setCandidates(formattedCandidates);
+    } catch (err) {
+      console.error("read_getCandidates error:", err);
+    }
+  }
+
+  async function read_getCurrentStatus(p) {
+    try {
+      if (!p) return;
+      const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
+      const status = await contractInstance.getVotingStatus();
+      setVotingStatus(status);
+    } catch (err) {
+      console.error("read_getCurrentStatus error:", err);
+    }
+  }
+
+  async function read_getRemainingTime(p) {
+    try {
+      if (!p) return;
+      const contractInstance = new ethers.Contract(contractAddress, contractAbi, p);
+      const time = await contractInstance.getRemainingTime();
+      setRemainingTime(time.toNumber ? time.toNumber() : Number(time));
+    } catch (err) {
+      console.error("read_getRemainingTime error:", err);
+    }
+  }
+
+  // wallet connect flow (signer required)
+  async function connectToMetamask() {
+    if (!window.ethereum) {
       console.error("Metamask is not detected in the browser");
+      return;
+    }
+    try {
+      const p = new ethers.providers.Web3Provider(window.ethereum);
+      setProvider(p);
+      // request accounts
+      const accounts = await p.send("eth_requestAccounts", []);
+      const signer = p.getSigner();
+      const address = await signer.getAddress();
+      setAccount(address);
+      setIsConnected(true);
+
+      // fetch signer-based pieces
+      await read_getCandidates(p);
+      await read_getRemainingTime(p);
+      await read_getCurrentStatus(p);
+      await updateCanVote(signer);
+    } catch (err) {
+      console.error("connectToMetamask error:", err);
     }
   }
 
@@ -134,6 +215,7 @@ function App() {
     setNumber(e.target.value);
   }
 
+  // simple UI render logic
   return (
     <div className="App">
       {votingStatus ? (
